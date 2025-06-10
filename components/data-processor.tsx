@@ -8,9 +8,12 @@ import { Card, CardContent } from "@/components/ui/card"
 import { FileUploader } from "@/components/file-uploader"
 import { PromptInput } from "@/components/prompt-input"
 import { ResultDisplay } from "@/components/result-display"
+import { FormulaResultDisplay } from "@/components/formula-result-display"
 import { processData } from "@/lib/data-processing"
 import { AlertCircle, Loader2 } from "lucide-react"
 import { Alert, AlertDescription } from "@/components/ui/alert"
+import { applyFormulaToData } from "@/lib/formula-utils"
+import { parseCSV } from "@/lib/file-utils"
 
 export function DataProcessor() {
   const [inputMethod, setInputMethod] = useState<"upload" | "paste">("upload")
@@ -20,6 +23,7 @@ export function DataProcessor() {
   const [pastedData, setPastedData] = useState("")
   const [prompt, setPrompt] = useState("")
   const [result, setResult] = useState<any | null>(null)
+  const [formulaResult, setFormulaResult] = useState<any | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -35,6 +39,7 @@ export function DataProcessor() {
       setLoading(true)
       setError(null)
       setResult(null)
+      setFormulaResult(null)
 
       const dataToProcess = inputMethod === "upload" ? fileData : pastedData
 
@@ -58,6 +63,81 @@ export function DataProcessor() {
       setError(err.message || "An error occurred while processing your data")
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleGenerateFormula = async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      setFormulaResult(null)
+
+      const dataToProcess = inputMethod === "upload" ? fileData : pastedData
+
+      if (!dataToProcess) {
+        throw new Error("Please upload a file or paste data first")
+      }
+
+      if (!prompt) {
+        throw new Error("Please enter a description of the formula you need")
+      }
+
+      // Parse the data to get headers and sample data
+      const parsedData = parseCSV(dataToProcess)
+      const headers = parsedData.length > 0 ? Object.keys(parsedData[0]) : []
+
+      const response = await fetch("/api/generate-formula", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          data: parsedData.slice(0, 5), // Send sample data for context
+          prompt,
+          headers,
+        }),
+      })
+
+      const formulaResponse = await response.json()
+
+      if (!response.ok) {
+        throw new Error(formulaResponse.error || "Failed to generate formula")
+      }
+
+      setFormulaResult({
+        formula: formulaResponse.formula,
+        explanation: formulaResponse.explanation,
+        headers,
+        data: parsedData,
+      })
+    } catch (err: any) {
+      setError(err.message || "An error occurred while generating the formula")
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleApplyFormula = (formula: string, column: string) => {
+    if (!formulaResult || !formulaResult.data || formulaResult.data.length === 0) {
+      setError("No data available to apply formula")
+      return
+    }
+
+    try {
+      // Apply the formula to the data
+      const updatedData = applyFormulaToData(formulaResult.data, formula, column)
+
+      // Create a result object similar to analysis results
+      const processedResult = {
+        data: updatedData,
+        summary: `Formula applied to column: ${column}. ${formulaResult.explanation}`,
+        fileName: `${fileName?.split(".")[0] || "data"}_with_formula`,
+      }
+
+      setResult(processedResult)
+      setFormulaResult(null) // Clear formula result after applying
+    } catch (err: any) {
+      setError(`Error applying formula: ${err.message}`)
     }
   }
 
@@ -94,7 +174,13 @@ export function DataProcessor() {
 
       <Card>
         <CardContent className="pt-6">
-          <PromptInput value={prompt} onChange={setPrompt} onSubmit={handleSubmit} isLoading={loading} />
+          <PromptInput
+            value={prompt}
+            onChange={setPrompt}
+            onSubmit={handleSubmit}
+            onGenerateFormula={handleGenerateFormula}
+            isLoading={loading}
+          />
         </CardContent>
       </Card>
 
@@ -108,8 +194,17 @@ export function DataProcessor() {
       {loading && (
         <div className="flex justify-center py-8">
           <Loader2 className="h-8 w-8 animate-spin text-primary" />
-          <span className="sr-only">Processing data...</span>
+          <span className="sr-only">Processing...</span>
         </div>
+      )}
+
+      {formulaResult && (
+        <FormulaResultDisplay
+          formula={formulaResult.formula}
+          explanation={formulaResult.explanation}
+          headers={formulaResult.headers}
+          onApplyFormula={handleApplyFormula}
+        />
       )}
 
       {result && <ResultDisplay result={result} />}
